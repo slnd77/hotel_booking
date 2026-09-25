@@ -1,0 +1,17 @@
+includes:
+    - vendor/larastan/larastan/extension.neon
+    - vendor/nesbot/carbon/extension.neon
+
+parameters:
+    paths:
+        - app/
+        - bootstrap/app.php
+        - config/
+        - database/
+        - routes/
+
+    level: 7
+
+    # Read each model's casts() from its code: its @return array<string, string> PHPDoc hides the
+    # date, enum and decimal casts otherwise.
+    parseModelCastsMethod: true
