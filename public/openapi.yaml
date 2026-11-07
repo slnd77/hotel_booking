@@ -1,0 +1,2535 @@
+openapi: 3.1.0
+info:
+    title: Hotel Booking API
+    version: 1.0.0
+    description: |
+        The JSON API for integrations: reservations and enquiries, guests, payments, the smart
+        booking chart and POS.
+
+        **Authentication.** Make an API key under Profile → Developer and send it on every request
+        as `Authorization: Bearer <key>`, with `Accept: application/json`. Each operation names the scope it needs (`x-scope`). A
+        request passes only when the key holds that scope **and** the key's owner is allowed the
+        matching action by their role at that moment, so a key never does more than its owner may.
+
+        **Dates and times.** Dates (`check_in`, `from`, `business_date`, …) are the property's
+        calendar dates, `YYYY-MM-DD`. Instants (`created_at`, `updated_at`, …) are UTC, ISO 8601.
+
+        **Syncing.** The list endpoints take `updated_since` (an instant) and are paginated
+        (`page`, `per_page` up to 100), newest first. Poll them to keep another system in step.
+
+        **Rate limits.** 120 requests a minute per key; sign-in endpoints 10 a minute per e-mail
+        address. Over the limit the API answers `429` with a `Retry-After` header.
+
+        **Errors.** `401` no or bad key, `403` missing scope or permission, `404` not found (or not
+        in this property), `422` validation (`message` and `errors` by field), `429` rate limit.
+
+        `/api/v1/panel/*` is the staff app's private bridge to the admin panel. Its responses follow
+        the web pages and change with them; it is not part of this API.
+servers:
+    - url: /api/v1
+security:
+    - apiKey: []
+tags:
+    - name: Authentication
+      description: Signing in a device with e-mail and password (and two-factor). Integrations use an API key instead.
+    - name: Account
+      description: "The key's user and the account's properties."
+    - name: Booking channels
+      description: 'The OTAs bookings can come from. Account owners only.'
+    - name: Smart chart
+      description: 'Availability, stays, blocks, notes and housekeeping, as on the web chart.'
+    - name: Bookings
+      description: 'Reservations and enquiries: list, read, create, edit, move, check in and out.'
+    - name: Guests
+      description: 'Guest profiles.'
+    - name: Payments
+      description: "Receipts and refunds, credited to the bookings' folios."
+    - name: POS
+      description: 'Outlets, bills, kitchen tickets, printing and sales.'
+
+paths:
+    /auth/login:
+        post:
+            tags: [Authentication]
+            operationId: signInADevice
+            summary: Sign in a device
+            description: Answers a token, or a two-factor challenge when the user has two-factor sign-in turned on.
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [email, password, device_name]
+                            properties:
+                                email: { type: string, format: email }
+                                password: { type: string }
+                                device_name: { type: string, maxLength: 100 }
+            responses:
+                '200':
+                    description: A device token, or a two-factor challenge.
+                    content:
+                        application/json:
+                            schema:
+                                oneOf:
+                                    - $ref: '#/components/schemas/DeviceToken'
+                                    - $ref: '#/components/schemas/TwoFactorChallenge'
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+                '429': { $ref: '#/components/responses/TooManyRequests' }
+
+    /auth/two-factor/code:
+        post:
+            tags: [Authentication]
+            operationId: sendATwoFactorCode
+            summary: Send a two-factor code
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [challenge_token, method]
+                            properties:
+                                challenge_token: { type: string }
+                                method:
+                                    {
+                                        type: string,
+                                        enum: [whatsapp, sms, email],
+                                    }
+            responses:
+                '200': { $ref: '#/components/responses/Message' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /auth/two-factor/code/verify:
+        post:
+            tags: [Authentication]
+            operationId: verifyASentCode
+            summary: Verify a sent code
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [challenge_token, method, code]
+                            properties:
+                                challenge_token: { type: string }
+                                method:
+                                    {
+                                        type: string,
+                                        enum: [whatsapp, sms, email],
+                                    }
+                                code: { type: string, maxLength: 12 }
+            responses:
+                '200': { $ref: '#/components/responses/DeviceToken' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /auth/two-factor/totp:
+        post:
+            tags: [Authentication]
+            operationId: verifyAnAuthenticatorAppCode
+            summary: Verify an authenticator app code
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [challenge_token, code]
+                            properties:
+                                challenge_token: { type: string }
+                                code: { type: string, maxLength: 12 }
+            responses:
+                '200': { $ref: '#/components/responses/DeviceToken' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /auth/two-factor/recovery:
+        post:
+            tags: [Authentication]
+            operationId: useARecoveryCode
+            summary: Use a recovery code
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [challenge_token, recovery_code]
+                            properties:
+                                challenge_token: { type: string }
+                                recovery_code: { type: string, maxLength: 100 }
+            responses:
+                '200': { $ref: '#/components/responses/DeviceToken' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /auth/two-factor/passkey/options:
+        post:
+            tags: [Authentication]
+            operationId: passkeyRequestOptions
+            summary: Passkey request options
+            description: WebAuthn request options for the challenge's user.
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [challenge_token]
+                            properties:
+                                challenge_token: { type: string }
+            responses:
+                '200':
+                    description: WebAuthn `PublicKeyCredentialRequestOptions`.
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    options: { type: object }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /auth/two-factor/passkey:
+        post:
+            tags: [Authentication]
+            operationId: verifyAPasskey
+            summary: Verify a passkey
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [challenge_token, credential]
+                            properties:
+                                challenge_token: { type: string }
+                                credential:
+                                    type: object
+                                    description: The WebAuthn assertion.
+                                    required: [id, rawId, type, response]
+                                    properties:
+                                        id: { type: string }
+                                        rawId: { type: string }
+                                        type:
+                                            { type: string, enum: [public-key] }
+                                        response: { type: object }
+            responses:
+                '200': { $ref: '#/components/responses/DeviceToken' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /auth/logout:
+        post:
+            tags: [Authentication]
+            operationId: revokeTheCurrentToken
+            summary: Revoke the current token
+            responses:
+                '200': { $ref: '#/components/responses/Message' }
+                '401': { $ref: '#/components/responses/Unauthenticated' }
+
+    /me:
+        get:
+            tags: [Account]
+            operationId: theKeyUser
+            summary: The key's user
+            description: Who the key belongs to, their roles and permissions, and the scopes this key may use now.
+            x-scope: account:read
+            responses:
+                '200':
+                    description: The user.
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    data: { $ref: '#/components/schemas/Me' }
+                '401': { $ref: '#/components/responses/Unauthenticated' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+
+    /properties:
+        get:
+            tags: [Account]
+            operationId: listProperties
+            summary: List properties
+            x-scope: account:read
+            responses:
+                '200':
+                    description: The account's properties, in the account's order.
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    data:
+                                        type: array
+                                        items:
+                                            {
+                                                $ref: '#/components/schemas/Property',
+                                            }
+                '401': { $ref: '#/components/responses/Unauthenticated' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+
+    /booking-channels:
+        get:
+            tags: [Booking channels]
+            operationId: listOtaChannels
+            summary: List OTA channels
+            description: The OTAs bookings can come from. Account owners only.
+            x-scope: channels:manage
+            responses:
+                '200':
+                    description: The channels.
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    data:
+                                        type: array
+                                        items:
+                                            {
+                                                $ref: '#/components/schemas/BookingChannel',
+                                            }
+                '403': { $ref: '#/components/responses/Forbidden' }
+        post:
+            tags: [Booking channels]
+            operationId: addAnOtaChannel
+            summary: Add an OTA channel
+            x-scope: channels:manage
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [name]
+                            properties:
+                                name:
+                                    {
+                                        type: string,
+                                        maxLength: 255,
+                                        description: 'Unique.',
+                                    }
+            responses:
+                '201': { $ref: '#/components/responses/BookingChannel' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /booking-channels/{bookingChannel}:
+        patch:
+            tags: [Booking channels]
+            operationId: renameOrSwitchAChannelOnOrOff
+            summary: Rename or switch a channel on or off
+            x-scope: channels:manage
+            parameters:
+                - {
+                      name: bookingChannel,
+                      in: path,
+                      required: true,
+                      schema: { type: integer },
+                  }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            properties:
+                                name: { type: string, maxLength: 255 }
+                                is_active: { type: boolean }
+            responses:
+                '200': { $ref: '#/components/responses/BookingChannel' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/chart:
+        get:
+            tags: [Smart chart]
+            operationId: theSmartBookingChart
+            summary: The smart booking chart
+            description: The days (with holidays, enquiry counts and notes), availability per room category, and each room's stays, blocks and housekeeping status.
+            x-scope: chart:read
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - {
+                      name: start_date,
+                      in: query,
+                      schema: { type: string, format: date },
+                      description: "First day shown. Defaults to the property's today.",
+                  }
+            responses:
+                '200':
+                    description: The chart.
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Chart' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /properties/{property}/chart-notes:
+        post:
+            tags: [Smart chart]
+            operationId: addANoteToADay
+            summary: Add a note to a day
+            x-scope: chart:notes
+            parameters:
+                - $ref: '#/components/parameters/property'
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [date, body]
+                            properties:
+                                date: { type: string, format: date }
+                                body: { type: string, maxLength: 1000 }
+            responses:
+                '200': { $ref: '#/components/responses/ChartNotes' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/chart-notes/{chartNote}:
+        put:
+            tags: [Smart chart]
+            operationId: editYourNote
+            summary: Edit your note
+            x-scope: chart:notes
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - {
+                      name: chartNote,
+                      in: path,
+                      required: true,
+                      schema: { type: integer },
+                  }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [body]
+                            properties:
+                                body: { type: string, maxLength: 1000 }
+            responses:
+                '200': { $ref: '#/components/responses/ChartNotes' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/rooms/{room}/housekeeping:
+        patch:
+            tags: [Smart chart]
+            operationId: setARoomHousekeepingStatus
+            summary: Set a room's housekeeping status
+            x-scope: chart:housekeeping
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - {
+                      name: room,
+                      in: path,
+                      required: true,
+                      schema: { type: integer },
+                  }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [status]
+                            properties:
+                                status:
+                                    {
+                                        type: string,
+                                        maxLength: 64,
+                                        description: "One of the chart's `housekeeping_statuses`, such as Clean or Dirty.",
+                                    }
+            responses:
+                '200':
+                    description: Saved.
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    message: { type: string }
+                                    housekeeping: { type: object }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/room-blocks:
+        post:
+            tags: [Smart chart]
+            operationId: blockRooms
+            summary: Block rooms
+            x-scope: chart:blocks
+            parameters:
+                - $ref: '#/components/parameters/property'
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/RoomRange'
+                                - type: object
+                                  required: [block_reason_id, remarks]
+                                  properties:
+                                      block_reason_id:
+                                          {
+                                              type: integer,
+                                              description: "From the chart's `block_reasons`.",
+                                          }
+                                      name: { type: string, maxLength: 255 }
+                                      remarks: { type: string, maxLength: 2000 }
+            responses:
+                '201':
+                    description: Blocked.
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    blocked:
+                                        {
+                                            type: integer,
+                                            description: 'Rooms blocked.',
+                                        }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/room-blocks/unblock:
+        post:
+            tags: [Smart chart]
+            operationId: unblockRoomsOverARange
+            summary: Unblock rooms over a range
+            x-scope: chart:blocks
+            parameters:
+                - $ref: '#/components/parameters/property'
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/RoomRange' }
+            responses:
+                '200':
+                    description: Unblocked.
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    unblocked:
+                                        {
+                                            type: integer,
+                                            description: 'Rooms unblocked.',
+                                        }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/room-blocks/{roomBlock}/move:
+        patch:
+            tags: [Smart chart]
+            operationId: moveABlockToAnotherRoomOrStartDate
+            summary: Move a block to another room or start date
+            x-scope: chart:blocks
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - {
+                      name: roomBlock,
+                      in: path,
+                      required: true,
+                      schema: { type: integer },
+                  }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [room_id, start_date]
+                            properties:
+                                room_id: { type: integer }
+                                start_date: { type: string, format: date }
+            responses:
+                '200': { $ref: '#/components/responses/Moved' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/bookings:
+        get:
+            tags: [Bookings]
+            operationId: listReservations
+            summary: List reservations
+            description: Reservations, newest first. Enquiries and expired quotes are under `/enquiries`.
+            x-scope: bookings:read
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - {
+                      name: status,
+                      in: query,
+                      schema: { type: string },
+                      description: 'Comma-separated: confirmed, on_hold, checked_in, checked_out, cancelled, no_show, pending.',
+                  }
+                - {
+                      name: from,
+                      in: query,
+                      schema: { type: string, format: date },
+                      description: 'Stays that end after this date.',
+                  }
+                - {
+                      name: to,
+                      in: query,
+                      schema: { type: string, format: date },
+                      description: 'Stays that start on or before this date.',
+                  }
+                - $ref: '#/components/parameters/updated_since'
+                - {
+                      name: q,
+                      in: query,
+                      schema: { type: string, maxLength: 100 },
+                      description: 'Part of the reservation ID.',
+                  }
+                - $ref: '#/components/parameters/page'
+                - $ref: '#/components/parameters/per_page'
+            responses:
+                '200': { $ref: '#/components/responses/BookingPage' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+        post:
+            tags: [Bookings]
+            operationId: createABooking
+            summary: Create a booking
+            description: A confirmed booking, a hold (`on_hold`) or an enquiry. Rates, taxes, restrictions and availability are checked as on the web booking form.
+            x-scope: bookings:write
+            parameters:
+                - $ref: '#/components/parameters/property'
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/BookingForm' }
+            responses:
+                '201': { $ref: '#/components/responses/BookingSaved' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/enquiries:
+        get:
+            tags: [Bookings]
+            operationId: listEnquiries
+            summary: List enquiries
+            description: Enquiries (quotes), including expired ones. Same filters as `/bookings`; status is enquiry or expired_quote.
+            x-scope: bookings:read
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - {
+                      name: status,
+                      in: query,
+                      schema: { type: string },
+                      description: 'Comma-separated: enquiry, expired_quote.',
+                  }
+                - {
+                      name: from,
+                      in: query,
+                      schema: { type: string, format: date },
+                  }
+                - {
+                      name: to,
+                      in: query,
+                      schema: { type: string, format: date },
+                  }
+                - $ref: '#/components/parameters/updated_since'
+                - {
+                      name: q,
+                      in: query,
+                      schema: { type: string, maxLength: 100 },
+                  }
+                - $ref: '#/components/parameters/page'
+                - $ref: '#/components/parameters/per_page'
+            responses:
+                '200': { $ref: '#/components/responses/BookingPage' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+        post:
+            tags: [Bookings]
+            operationId: logAnEnquiry
+            summary: Log an enquiry
+            description: The booking form's fields; the status is set to enquiry.
+            x-scope: bookings:write
+            parameters:
+                - $ref: '#/components/parameters/property'
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/BookingForm' }
+            responses:
+                '201': { $ref: '#/components/responses/BookingSaved' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/bookings/search:
+        get:
+            tags: [Bookings]
+            operationId: findBookingsByReservationId
+            summary: Find bookings by reservation ID
+            x-scope: bookings:read
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - {
+                      name: q,
+                      in: query,
+                      required: true,
+                      schema: { type: string, maxLength: 100 },
+                  }
+            responses:
+                '200':
+                    description: Up to 20 matches.
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    data:
+                                        type: array
+                                        items:
+                                            type: object
+                                            properties:
+                                                id: { type: integer }
+                                                booking_ref_id: { type: string }
+                                                status:
+                                                    {
+                                                        $ref: '#/components/schemas/BookingStatus',
+                                                    }
+                                                status_label: { type: string }
+                                                check_in:
+                                                    {
+                                                        type: string,
+                                                        format: date,
+                                                    }
+                                                check_out:
+                                                    {
+                                                        type: string,
+                                                        format: date,
+                                                    }
+                                                guest:
+                                                    { type: [string, 'null'] }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/bookings/options:
+        get:
+            tags: [Bookings]
+            operationId: whatTheBookingFormOffers
+            summary: What the booking form offers
+            description: Room categories with their rooms and meal plans, booking types, sources, statuses and hold defaults.
+            x-scope: bookings:read
+            parameters:
+                - $ref: '#/components/parameters/property'
+            responses:
+                '200':
+                    description: The options.
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    categories:
+                                        type: array
+                                        items:
+                                            type: object
+                                            properties:
+                                                id: { type: integer }
+                                                name: { type: string }
+                                                abbreviation:
+                                                    { type: [string, 'null'] }
+                                                meal_plans:
+                                                    {
+                                                        type: array,
+                                                        items: { type: string },
+                                                    }
+                                                max_adults: { type: integer }
+                                                max_children: { type: integer }
+                                                sell_by_bed: { type: boolean }
+                                                rooms:
+                                                    type: array
+                                                    items:
+                                                        type: object
+                                                        properties:
+                                                            id:
+                                                                {
+                                                                    type: integer,
+                                                                }
+                                                            name:
+                                                                { type: string }
+                                    types: { type: array, items: {} }
+                                    sources:
+                                        {
+                                            type: array,
+                                            items:
+                                                {
+                                                    $ref: '#/components/schemas/Option',
+                                                },
+                                        }
+                                    statuses:
+                                        {
+                                            type: array,
+                                            items:
+                                                {
+                                                    $ref: '#/components/schemas/Option',
+                                                },
+                                        }
+                                    hold_defaults: { type: object }
+                '403': { $ref: '#/components/responses/Forbidden' }
+
+    /properties/{property}/bookings/{booking}:
+        get:
+            tags: [Bookings]
+            operationId: readABooking
+            summary: Read a booking
+            description: One reservation or enquiry with its rooms, guests, receipts and folios.
+            x-scope: bookings:read
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - $ref: '#/components/parameters/booking'
+            responses:
+                '200':
+                    description: The booking.
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    data:
+                                        allOf:
+                                            - $ref: '#/components/schemas/Booking'
+                                            - type: object
+                                              properties:
+                                                  folios:
+                                                      {
+                                                          type: array,
+                                                          items:
+                                                              { type: object },
+                                                          description: 'Folios with their windows and lines.',
+                                                      }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+        put:
+            tags: [Bookings]
+            operationId: editABooking
+            summary: Edit a booking
+            description: Send the whole booking form. The status must stay the booking's current status (change it with `/status`).
+            x-scope: bookings:write
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - $ref: '#/components/parameters/booking'
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/BookingForm' }
+            responses:
+                '200': { $ref: '#/components/responses/BookingSaved' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/bookings/{booking}/summary:
+        get:
+            tags: [Bookings]
+            operationId: aBookingInBrief
+            summary: A booking in brief
+            description: What the chart shows when a stay is tapped.
+            x-scope: bookings:read
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - $ref: '#/components/parameters/booking'
+            responses:
+                '200':
+                    description: The summary.
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    id: { type: integer }
+                                    booking_ref_id: { type: string }
+                                    status:
+                                        {
+                                            $ref: '#/components/schemas/BookingStatus',
+                                        }
+                                    status_label: { type: string }
+                                    check_in: { type: string, format: date }
+                                    check_out: { type: string, format: date }
+                                    nights: { type: integer }
+                                    room_lines:
+                                        { type: array, items: { type: string } }
+                                    guest:
+                                        type: [object, 'null']
+                                        properties:
+                                            name: { type: string }
+                                            phone: { type: [string, 'null'] }
+                                            email: { type: [string, 'null'] }
+                                    source: { type: string }
+                                    total: { type: number }
+                                    outstanding: { type: number }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /properties/{property}/bookings/{booking}/status:
+        patch:
+            tags: [Bookings]
+            operationId: checkInCheckOutCancelOrMarkNoStay
+            summary: Check in, check out, cancel or mark no stay
+            x-scope: bookings:write
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - $ref: '#/components/parameters/booking'
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            properties:
+                                status:
+                                    {
+                                        type: string,
+                                        enum:
+                                            [
+                                                confirmed,
+                                                checked_in,
+                                                checked_out,
+                                                cancelled,
+                                                no_stay,
+                                            ],
+                                        description: 'confirmed undoes a check-in.',
+                                    }
+                                check_in_status: { type: string }
+                                reported_at:
+                                    {
+                                        type: string,
+                                        format: date-time,
+                                        description: 'When the guest arrived or left. Not in the future.',
+                                    }
+                                housekeeping_status:
+                                    {
+                                        type: string,
+                                        description: "The rooms' status after check-out.",
+                                    }
+            responses:
+                '200': { $ref: '#/components/responses/Message' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/bookings/{booking}/move:
+        patch:
+            tags: [Bookings]
+            operationId: moveAStayToAnotherRoomOrDate
+            summary: Move a stay to another room or date
+            x-scope: bookings:write
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - $ref: '#/components/parameters/booking'
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [sub_booking_id, room_id, check_in]
+                            properties:
+                                sub_booking_id:
+                                    {
+                                        type: integer,
+                                        description: 'The booking room (`rooms[].id`).',
+                                    }
+                                room_id: { type: integer }
+                                check_in: { type: string, format: date }
+                                scope:
+                                    {
+                                        type: string,
+                                        enum: [booking, room],
+                                        description: "room: only this room's dates move (the booking is split); booking: every room moves.",
+                                    }
+            responses:
+                '200': { $ref: '#/components/responses/Moved' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/guests/search:
+        get:
+            tags: [Bookings]
+            operationId: findGuestsForABooking
+            summary: Find guests for a booking
+            description: The booking form's guest picker, by name, phone, e-mail or guest ID.
+            x-scope: bookings:read
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - {
+                      name: q,
+                      in: query,
+                      required: true,
+                      schema: { type: string, maxLength: 255 },
+                  }
+            responses:
+                '200':
+                    description: Up to 10 guests.
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    guests:
+                                        { type: array, items: { type: object } }
+                '403': { $ref: '#/components/responses/Forbidden' }
+
+    /properties/{property}/guests:
+        get:
+            tags: [Guests]
+            operationId: listGuests
+            summary: List guests
+            x-scope: guests:read
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - {
+                      name: q,
+                      in: query,
+                      schema: { type: string, maxLength: 255 },
+                      description: 'Name, phone or e-mail.',
+                  }
+                - $ref: '#/components/parameters/updated_since'
+                - $ref: '#/components/parameters/page'
+                - $ref: '#/components/parameters/per_page'
+            responses:
+                '200':
+                    description: A page of guests.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/Page'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              {
+                                                  type: array,
+                                                  items:
+                                                      {
+                                                          $ref: '#/components/schemas/Guest',
+                                                      },
+                                              }
+                '403': { $ref: '#/components/responses/Forbidden' }
+        post:
+            tags: [Bookings]
+            operationId: addAGuest
+            summary: Add a guest
+            description: Required fields follow Application Settings → Guest.
+            x-scope: bookings:write
+            parameters:
+                - $ref: '#/components/parameters/property'
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/GuestForm' }
+            responses:
+                '200':
+                    description: The new guest.
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    guest: { type: object }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/guests/{guest}:
+        get:
+            tags: [Guests]
+            operationId: readAGuest
+            summary: Read a guest
+            x-scope: guests:read
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - $ref: '#/components/parameters/guest'
+            responses:
+                '200': { $ref: '#/components/responses/Guest' }
+                '404': { $ref: '#/components/responses/NotFound' }
+        put:
+            tags: [Guests]
+            operationId: editAGuest
+            summary: Edit a guest
+            x-scope: guests:write
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - $ref: '#/components/parameters/guest'
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/GuestForm' }
+            responses:
+                '200': { $ref: '#/components/responses/Guest' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/payments:
+        get:
+            tags: [Payments]
+            operationId: listReceiptsAndRefunds
+            summary: List receipts and refunds
+            x-scope: payments:read
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - {
+                      name: type,
+                      in: query,
+                      schema: { type: string, enum: [receipt, refund] },
+                  }
+                - {
+                      name: status,
+                      in: query,
+                      schema: { $ref: '#/components/schemas/PaymentStatus' },
+                  }
+                - { name: booking_id, in: query, schema: { type: integer } }
+                - {
+                      name: from,
+                      in: query,
+                      schema: { type: string, format: date },
+                      description: 'Paid on or after this property day.',
+                  }
+                - {
+                      name: to,
+                      in: query,
+                      schema: { type: string, format: date },
+                      description: 'Paid on or before this property day.',
+                  }
+                - $ref: '#/components/parameters/updated_since'
+                - $ref: '#/components/parameters/page'
+                - $ref: '#/components/parameters/per_page'
+            responses:
+                '200':
+                    description: A page of payments.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/Page'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              {
+                                                  type: array,
+                                                  items:
+                                                      {
+                                                          $ref: '#/components/schemas/Payment',
+                                                      },
+                                              }
+                '403': { $ref: '#/components/responses/Forbidden' }
+        post:
+            tags: [Payments]
+            operationId: recordAReceiptOrRefund
+            summary: Record a receipt or refund
+            description: |
+                Tag it to one booking (`booking_id`, `tagged_amount`) or several (`allocations`), optionally
+                naming the folio windows each booking's share settles. Paid in another currency: send
+                `currency_code` and `currency_amount`; the server converts at that day's rate.
+            x-scope: payments:write
+            parameters:
+                - $ref: '#/components/parameters/property'
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [guest_name, payment_mode]
+                            properties:
+                                booking_id: { type: [integer, 'null'] }
+                                type:
+                                    {
+                                        type: string,
+                                        enum: [receipt, refund],
+                                        default: receipt,
+                                    }
+                                guest_name: { type: string, maxLength: 255 }
+                                payment_mode:
+                                    { $ref: '#/components/schemas/PaymentMode' }
+                                paid_by: { type: string, maxLength: 100 }
+                                total_txn_amount:
+                                    {
+                                        type: number,
+                                        minimum: 0.01,
+                                        description: 'Required unless currency_code is sent.',
+                                    }
+                                currency_code:
+                                    { type: string, minLength: 3, maxLength: 3 }
+                                currency_amount: { type: number, minimum: 0.01 }
+                                tagged_amount: { type: number, minimum: 0 }
+                                allocations:
+                                    type: array
+                                    maxItems: 50
+                                    items:
+                                        type: object
+                                        required: [booking_id, tagged_amount]
+                                        properties:
+                                            booking_id: { type: integer }
+                                            tagged_amount:
+                                                { type: number, minimum: 0 }
+                                            windows:
+                                                type: array
+                                                maxItems: 50
+                                                items:
+                                                    type: object
+                                                    required:
+                                                        [sub_folio_id, amount]
+                                                    properties:
+                                                        sub_folio_id:
+                                                            { type: integer }
+                                                        amount:
+                                                            {
+                                                                type: number,
+                                                                minimum: 0,
+                                                            }
+                                payment_transaction_date:
+                                    { type: string, format: date-time }
+                                voucher_number: { type: string, maxLength: 255 }
+                                payment_ref_id: { type: string, maxLength: 255 }
+                                pg_txn_id: { type: string, maxLength: 255 }
+                                notes: { type: string, maxLength: 2000 }
+                                booking_source: { type: string, maxLength: 100 }
+            responses:
+                '201': { $ref: '#/components/responses/Payment' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/payments/{payment}:
+        get:
+            tags: [Payments]
+            operationId: readAPayment
+            summary: Read a payment
+            x-scope: payments:read
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - $ref: '#/components/parameters/payment'
+            responses:
+                '200': { $ref: '#/components/responses/Payment' }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /properties/{property}/payments/{payment}/cancel:
+        post:
+            tags: [Payments]
+            operationId: cancelAPayment
+            summary: Cancel a payment
+            description: The folios it paid are owed again.
+            x-scope: payments:write
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - $ref: '#/components/parameters/payment'
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [cancellation_reason]
+                            properties:
+                                cancellation_reason:
+                                    { type: string, maxLength: 500 }
+            responses:
+                '200': { $ref: '#/components/responses/Payment' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/outlets:
+        get:
+            tags: [POS]
+            operationId: listOutletsWithItemsAndTodayPrices
+            summary: List outlets with items and today's prices
+            x-scope: pos:read
+            parameters:
+                - $ref: '#/components/parameters/property'
+            responses:
+                '200':
+                    description: Active outlets and their active items.
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    business_date:
+                                        { type: string, format: date }
+                                    data:
+                                        type: array
+                                        items:
+                                            type: object
+                                            properties:
+                                                id: { type: integer }
+                                                name: { type: string }
+                                                type: { type: string }
+                                                items:
+                                                    type: array
+                                                    items:
+                                                        type: object
+                                                        properties:
+                                                            id:
+                                                                {
+                                                                    type: integer,
+                                                                }
+                                                            name:
+                                                                { type: string }
+                                                            category:
+                                                                {
+                                                                    type:
+                                                                        [
+                                                                            string,
+                                                                            'null',
+                                                                        ],
+                                                                }
+                                                            item_type:
+                                                                {
+                                                                    type:
+                                                                        [
+                                                                            string,
+                                                                            'null',
+                                                                        ],
+                                                                }
+                                                            sac_hsn_code:
+                                                                {
+                                                                    type:
+                                                                        [
+                                                                            string,
+                                                                            'null',
+                                                                        ],
+                                                                }
+                                                            price:
+                                                                {
+                                                                    type:
+                                                                        [
+                                                                            number,
+                                                                            'null',
+                                                                        ],
+                                                                    description: "Null when no active price plan covers today; the item can't be billed.",
+                                                                }
+                                                            tax_rate:
+                                                                { type: number }
+                '403': { $ref: '#/components/responses/Forbidden' }
+
+    /properties/{property}/outlets/{outlet}/bills:
+        post:
+            tags: [POS]
+            operationId: openABill
+            summary: Open a bill
+            x-scope: pos:write
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - $ref: '#/components/parameters/outlet'
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/BillItems'
+                                - type: object
+                                  properties:
+                                      guest_name:
+                                          { type: string, maxLength: 255 }
+                                      table_number:
+                                          { type: string, maxLength: 20 }
+                                      outlet_table_id: { type: integer }
+                                      notes: { type: string, maxLength: 2000 }
+            responses:
+                '201': { $ref: '#/components/responses/OutletBill' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/outlets/{outlet}/drawer:
+        post:
+            tags: [POS]
+            operationId: openTheCashDrawer
+            summary: Open the cash drawer
+            description: On the outlet's network printer, or with `?format=escpos` the ESC/POS drawer kick bytes for a printer you drive.
+            x-scope: pos:write
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - $ref: '#/components/parameters/outlet'
+                - {
+                      name: format,
+                      in: query,
+                      schema: { type: string, enum: [escpos] },
+                  }
+            responses:
+                '200':
+                    description: Opened, or the ESC/POS bytes.
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Message' }
+                        application/octet-stream:
+                            schema: { type: string, format: binary }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/outlet-bills:
+        get:
+            tags: [POS]
+            operationId: listBills
+            summary: List bills
+            x-scope: pos:read
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - { name: outlet_id, in: query, schema: { type: integer } }
+                - {
+                      name: status,
+                      in: query,
+                      schema:
+                          { type: string, enum: [open, posted, settled, void] },
+                  }
+                - {
+                      name: business_date,
+                      in: query,
+                      schema: { type: string, format: date },
+                  }
+                - { name: booking_id, in: query, schema: { type: integer } }
+                - $ref: '#/components/parameters/page'
+                - $ref: '#/components/parameters/per_page'
+            responses:
+                '200':
+                    description: A page of bills.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/Page'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              {
+                                                  type: array,
+                                                  items:
+                                                      {
+                                                          $ref: '#/components/schemas/OutletBill',
+                                                      },
+                                              }
+                '403': { $ref: '#/components/responses/Forbidden' }
+
+    /properties/{property}/outlet-bills/{outletBill}:
+        get:
+            tags: [POS]
+            operationId: readABill
+            summary: Read a bill
+            x-scope: pos:read
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - $ref: '#/components/parameters/outletBill'
+            responses:
+                '200': { $ref: '#/components/responses/OutletBill' }
+                '404': { $ref: '#/components/responses/NotFound' }
+        put:
+            tags: [POS]
+            operationId: setABillItems
+            summary: Set a bill's items
+            description: Replaces the open bill's lines with `items`.
+            x-scope: pos:write
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - $ref: '#/components/parameters/outletBill'
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            allOf:
+                                - $ref: '#/components/schemas/BillItems'
+                                - type: object
+                                  required: [items]
+                                  properties:
+                                      guest_name:
+                                          { type: string, maxLength: 255 }
+                                      table_number:
+                                          { type: string, maxLength: 20 }
+                                      notes: { type: string, maxLength: 2000 }
+            responses:
+                '200': { $ref: '#/components/responses/OutletBill' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/outlet-bills/{outletBill}/post-to-room:
+        post:
+            tags: [POS]
+            operationId: postABillToARoomFolio
+            summary: Post a bill to a room's folio
+            description: The room must be checked in. An optional payment is recorded against the folio.
+            x-scope: pos:write
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - $ref: '#/components/parameters/outletBill'
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [sub_booking_id]
+                            properties:
+                                sub_booking_id: { type: integer }
+                                sub_folio_id: { type: integer }
+                                payment:
+                                    type: object
+                                    required: [payment_mode, amount]
+                                    properties:
+                                        payment_mode:
+                                            {
+                                                $ref: '#/components/schemas/PaymentMode',
+                                            }
+                                        amount: { type: number, minimum: 0.01 }
+                                        reference:
+                                            { type: string, maxLength: 255 }
+            responses:
+                '200': { $ref: '#/components/responses/OutletBill' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/outlet-bills/{outletBill}/settle:
+        post:
+            tags: [POS]
+            operationId: settleABill
+            summary: Settle a bill
+            description: One payment (`payment_mode`) or a split (`payments`). The receipt prints on the outlet's network printer when it has one; `print_error` says why it didn't.
+            x-scope: pos:write
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - $ref: '#/components/parameters/outletBill'
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            properties:
+                                payment_mode:
+                                    { $ref: '#/components/schemas/PaymentMode' }
+                                reference: { type: string, maxLength: 255 }
+                                payments:
+                                    type: array
+                                    minItems: 1
+                                    maxItems: 20
+                                    items:
+                                        type: object
+                                        required: [payment_mode, amount]
+                                        properties:
+                                            payment_mode:
+                                                {
+                                                    $ref: '#/components/schemas/PaymentMode',
+                                                }
+                                            amount:
+                                                { type: number, minimum: 0.01 }
+                                            reference:
+                                                { type: string, maxLength: 255 }
+                                            payer:
+                                                { type: string, maxLength: 100 }
+            responses:
+                '200':
+                    description: The settled bill.
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    data:
+                                        {
+                                            $ref: '#/components/schemas/OutletBill',
+                                        }
+                                    print_error: { type: [string, 'null'] }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/outlet-bills/{outletBill}/void:
+        post:
+            tags: [POS]
+            operationId: voidABill
+            summary: Void a bill
+            x-scope: pos:write
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - $ref: '#/components/parameters/outletBill'
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [reason]
+                            properties:
+                                reason: { type: string, maxLength: 255 }
+            responses:
+                '200': { $ref: '#/components/responses/OutletBill' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/outlet-bills/{outletBill}/kots:
+        post:
+            tags: [POS]
+            operationId: sendNewItemsToTheKitchen
+            summary: Send new items to the kitchen
+            description: A kitchen ticket (KOT) for the items not sent yet, printed on the kitchen printer when the outlet has one.
+            x-scope: pos:write
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - $ref: '#/components/parameters/outletBill'
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            properties:
+                                notes: { type: string, maxLength: 500 }
+            responses:
+                '201':
+                    description: The ticket.
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    data:
+                                        {
+                                            $ref: '#/components/schemas/OutletBill',
+                                        }
+                                    kot_id: { type: integer }
+                                    printed: { type: boolean }
+                                    print_error: { type: [string, 'null'] }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/outlet-bills/{outletBill}/print:
+        get:
+            tags: [POS]
+            operationId: theBillPrintout
+            summary: The bill printout
+            description: An HTML page for its paper, or ESC/POS bytes with `?format=escpos`.
+            x-scope: pos:read
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - $ref: '#/components/parameters/outletBill'
+                - $ref: '#/components/parameters/printFormat'
+                - $ref: '#/components/parameters/paper'
+            responses:
+                '200': { $ref: '#/components/responses/Printout' }
+                '404': { $ref: '#/components/responses/NotFound' }
+        post:
+            tags: [POS]
+            operationId: printTheBillOnTheOutletPrinter
+            summary: Print the bill on the outlet printer
+            x-scope: pos:write
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - $ref: '#/components/parameters/outletBill'
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            properties:
+                                paper:
+                                    {
+                                        type: string,
+                                        enum: [a4, thermal_80, thermal_58],
+                                    }
+            responses:
+                '200': { $ref: '#/components/responses/Message' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/kots/{outletKot}/print:
+        get:
+            tags: [POS]
+            operationId: theKitchenTicketPrintout
+            summary: The kitchen ticket printout
+            x-scope: pos:read
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - $ref: '#/components/parameters/outletKot'
+                - $ref: '#/components/parameters/printFormat'
+                - $ref: '#/components/parameters/paper'
+            responses:
+                '200': { $ref: '#/components/responses/Printout' }
+                '404': { $ref: '#/components/responses/NotFound' }
+        post:
+            tags: [POS]
+            operationId: printTheKitchenTicketOnTheKitchenPrinter
+            summary: Print the kitchen ticket on the kitchen printer
+            x-scope: pos:write
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - $ref: '#/components/parameters/outletKot'
+            responses:
+                '200': { $ref: '#/components/responses/Message' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /properties/{property}/pos/summary:
+        get:
+            tags: [POS]
+            operationId: posSales
+            summary: POS sales
+            description: Sales over a range of business dates (92 days at most). Defaults to today.
+            x-scope: pos:read
+            parameters:
+                - $ref: '#/components/parameters/property'
+                - {
+                      name: from,
+                      in: query,
+                      schema: { type: string, format: date },
+                  }
+                - {
+                      name: to,
+                      in: query,
+                      schema: { type: string, format: date },
+                  }
+                - { name: outlet_id, in: query, schema: { type: integer } }
+            responses:
+                '200':
+                    description: The summary.
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    data: { type: object }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+components:
+    securitySchemes:
+        apiKey:
+            type: http
+            scheme: bearer
+            description: An API key from Profile → Developer, or a device token from `/auth/login`.
+
+    parameters:
+        property:
+            {
+                name: property,
+                in: path,
+                required: true,
+                schema: { type: integer },
+                description: "The property's ID (from `/properties`).",
+            }
+        booking:
+            {
+                name: booking,
+                in: path,
+                required: true,
+                schema: { type: integer },
+            }
+        guest:
+            { name: guest, in: path, required: true, schema: { type: integer } }
+        payment:
+            {
+                name: payment,
+                in: path,
+                required: true,
+                schema: { type: integer },
+            }
+        outlet:
+            {
+                name: outlet,
+                in: path,
+                required: true,
+                schema: { type: integer },
+            }
+        outletBill:
+            {
+                name: outletBill,
+                in: path,
+                required: true,
+                schema: { type: integer },
+            }
+        outletKot:
+            {
+                name: outletKot,
+                in: path,
+                required: true,
+                schema: { type: integer },
+            }
+        updated_since:
+            {
+                name: updated_since,
+                in: query,
+                schema: { type: string, format: date-time },
+                description: 'Only records changed at or after this instant.',
+            }
+        page:
+            {
+                name: page,
+                in: query,
+                schema: { type: integer, minimum: 1, default: 1 },
+            }
+        per_page:
+            {
+                name: per_page,
+                in: query,
+                schema:
+                    { type: integer, minimum: 1, maximum: 100, default: 25 },
+            }
+        printFormat:
+            {
+                name: format,
+                in: query,
+                schema: { type: string, enum: [escpos] },
+                description: 'ESC/POS bytes instead of HTML.',
+            }
+        paper:
+            {
+                name: paper,
+                in: query,
+                schema: { type: string, enum: [a4, thermal_80, thermal_58] },
+            }
+
+    responses:
+        Message:
+            description: Done.
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Message' }
+        Moved:
+            description: Moved.
+            content:
+                application/json:
+                    schema:
+                        type: object
+                        properties:
+                            moved: { type: boolean }
+                            price:
+                                {
+                                    description: 'The new rate, when the move changes it.',
+                                }
+        DeviceToken:
+            description: Signed in.
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/DeviceToken' }
+        BookingChannel:
+            description: The channel.
+            content:
+                application/json:
+                    schema:
+                        type: object
+                        properties:
+                            message: { type: string }
+                            channel:
+                                { $ref: '#/components/schemas/BookingChannel' }
+        ChartNotes:
+            description: The day's notes.
+            content:
+                application/json:
+                    schema:
+                        type: object
+                        properties:
+                            notes:
+                                type: array
+                                items:
+                                    type: object
+                                    properties:
+                                        id: { type: integer }
+                                        user_id: { type: integer }
+                                        user_name: { type: string }
+                                        body: { type: string }
+                                        updated_at:
+                                            {
+                                                type: [string, 'null'],
+                                                format: date-time,
+                                            }
+        BookingPage:
+            description: A page of bookings.
+            content:
+                application/json:
+                    schema:
+                        allOf:
+                            - $ref: '#/components/schemas/Page'
+                            - type: object
+                              properties:
+                                  data:
+                                      {
+                                          type: array,
+                                          items:
+                                              {
+                                                  $ref: '#/components/schemas/Booking',
+                                              },
+                                      }
+        BookingSaved:
+            description: Saved.
+            content:
+                application/json:
+                    schema:
+                        type: object
+                        properties:
+                            message: { type: string }
+                            booking:
+                                type: object
+                                properties:
+                                    id: { type: integer }
+                                    booking_ref_id: { type: string }
+                                    status:
+                                        {
+                                            $ref: '#/components/schemas/BookingStatus',
+                                        }
+        Guest:
+            description: The guest.
+            content:
+                application/json:
+                    schema:
+                        type: object
+                        properties:
+                            data: { $ref: '#/components/schemas/Guest' }
+        Payment:
+            description: The payment.
+            content:
+                application/json:
+                    schema:
+                        type: object
+                        properties:
+                            data: { $ref: '#/components/schemas/Payment' }
+        OutletBill:
+            description: The bill.
+            content:
+                application/json:
+                    schema:
+                        type: object
+                        properties:
+                            data: { $ref: '#/components/schemas/OutletBill' }
+        Printout:
+            description: The printout.
+            content:
+                text/html:
+                    schema: { type: string }
+                application/octet-stream:
+                    schema: { type: string, format: binary }
+        Unauthenticated:
+            description: No key, or the key is revoked or expired.
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Message' }
+        Forbidden:
+            description: The key lacks the scope, or the owner's role doesn't allow the action.
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Message' }
+        NotFound:
+            description: Not found, or not in this property.
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Message' }
+        ValidationError:
+            description: The request isn't valid.
+            content:
+                application/json:
+                    schema:
+                        type: object
+                        properties:
+                            message: { type: string }
+                            errors:
+                                type: object
+                                additionalProperties:
+                                    { type: array, items: { type: string } }
+        TooManyRequests:
+            description: Over the rate limit. Retry after `Retry-After` seconds.
+
+    schemas:
+        Message:
+            type: object
+            properties:
+                message: { type: string }
+
+        Option:
+            type: object
+            properties:
+                value: { type: string }
+                label: { type: string }
+
+        Page:
+            type: object
+            description: Laravel pagination.
+            properties:
+                links:
+                    type: object
+                    properties:
+                        first: { type: [string, 'null'] }
+                        last: { type: [string, 'null'] }
+                        prev: { type: [string, 'null'] }
+                        next: { type: [string, 'null'] }
+                meta:
+                    type: object
+                    properties:
+                        current_page: { type: integer }
+                        from: { type: [integer, 'null'] }
+                        last_page: { type: integer }
+                        per_page: { type: integer }
+                        to: { type: [integer, 'null'] }
+                        total: { type: integer }
+
+        DeviceToken:
+            type: object
+            properties:
+                token: { type: string }
+                token_type: { type: string, enum: [Bearer] }
+                user: { $ref: '#/components/schemas/Me' }
+
+        TwoFactorChallenge:
+            type: object
+            properties:
+                two_factor: { type: boolean, enum: [true] }
+                challenge_token: { type: string }
+                expires_in: { type: integer, description: 'Seconds.' }
+                methods:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            value:
+                                {
+                                    type: string,
+                                    enum: [passkey, totp, whatsapp, sms, email],
+                                }
+                            label: { type: string }
+                            destination:
+                                {
+                                    type: [string, 'null'],
+                                    description: 'Where a code is sent, masked.',
+                                }
+
+        Me:
+            type: object
+            properties:
+                id: { type: integer }
+                name: { type: string }
+                email: { type: string }
+                mobile_country_code: { type: [string, 'null'] }
+                mobile: { type: [string, 'null'] }
+                roles: { type: array, items: { type: string } }
+                permissions:
+                    {
+                        type: array,
+                        items: { type: string },
+                        description: '`["*"]` for full-access roles.',
+                    }
+                scopes:
+                    {
+                        type: array,
+                        items: { type: string },
+                        description: 'What this token may use now.',
+                    }
+                two_factor_methods: { type: array, items: { type: string } }
+                plan_features:
+                    {
+                        type: [array, 'null'],
+                        items: { type: string },
+                        description: "The plan's features; null means everything.",
+                    }
+                package_menus: { type: object }
+
+        Property:
+            type: object
+            properties:
+                id: { type: integer }
+                name: { type: string }
+                abbreviation: { type: [string, 'null'] }
+                timezone: { type: string, description: 'IANA timezone.' }
+                today:
+                    {
+                        type: string,
+                        format: date,
+                        description: "The property's business date.",
+                    }
+
+        BookingChannel:
+            type: object
+            properties:
+                id: { type: integer }
+                name: { type: string }
+                is_active: { type: boolean }
+                bookings_count: { type: integer }
+
+        Chart:
+            type: object
+            properties:
+                property_id: { type: integer }
+                start_date: { type: string, format: date }
+                end_date: { type: string, format: date }
+                today: { type: string, format: date }
+                can_go_prev: { type: boolean }
+                dates:
+                    {
+                        type: array,
+                        items: { type: object },
+                        description: 'Each day with holidays, enquiry counts and notes.',
+                    }
+                daily_totals: { type: object }
+                categories:
+                    {
+                        type: array,
+                        items: { type: object },
+                        description: "Categories with availability and their rooms' stays and blocks.",
+                    }
+                block_reasons: { type: array, items: { type: object } }
+                housekeeping_statuses: { type: array, items: { type: object } }
+
+        RoomRange:
+            type: object
+            required: [start_date, end_date, room_ids]
+            properties:
+                start_date: { type: string, format: date }
+                end_date:
+                    {
+                        type: string,
+                        format: date,
+                        description: 'After start_date.',
+                    }
+                room_ids: { type: array, minItems: 1, items: { type: integer } }
+
+        BookingStatus:
+            type: string
+            enum:
+                [
+                    confirmed,
+                    on_hold,
+                    checked_in,
+                    checked_out,
+                    cancelled,
+                    no_show,
+                    pending,
+                    enquiry,
+                    expired_quote,
+                ]
+
+        Booking:
+            type: object
+            properties:
+                id: { type: integer }
+                property_id: { type: integer }
+                booking_ref_id: { type: string }
+                status: { $ref: '#/components/schemas/BookingStatus' }
+                status_label: { type: string }
+                source: { type: string }
+                booking_channel_id: { type: [integer, 'null'] }
+                agent_id: { type: [integer, 'null'] }
+                type: { type: string }
+                booking_type: { type: [string, 'null'] }
+                check_in: { type: string, format: date }
+                check_out: { type: string, format: date }
+                check_in_time: { type: [string, 'null'] }
+                check_out_time: { type: [string, 'null'] }
+                rate_plan: { type: [string, 'null'] }
+                pay_at_hotel: { type: boolean }
+                room_total: { type: number }
+                discount: { type: number }
+                taxes: { type: number }
+                total: { type: number }
+                outstanding: { type: number }
+                special_instructions: { type: [string, 'null'] }
+                internal_notes: { type: [string, 'null'] }
+                hold_release_at: { type: [string, 'null'], format: date-time }
+                created_at: { type: string, format: date-time }
+                updated_at: { type: string, format: date-time }
+                guests:
+                    {
+                        type: array,
+                        items: { $ref: '#/components/schemas/Guest' },
+                    }
+                rooms:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            id: { type: integer }
+                            room_category_id: { type: integer }
+                            room_category: { type: [string, 'null'] }
+                            room_id: { type: [integer, 'null'] }
+                            room: { type: [string, 'null'] }
+                            meal_plan: { type: [string, 'null'] }
+                            adults: { type: integer }
+                            children: { type: integer }
+                            infants: { type: integer }
+                            rate_per_night: { type: number }
+                            check_in_date: { type: string, format: date }
+                            check_out_date: { type: string, format: date }
+                            status: { type: string }
+                payments:
+                    {
+                        type: array,
+                        items: { $ref: '#/components/schemas/Payment' },
+                        description: 'On a single booking only.',
+                    }
+
+        BookingForm:
+            type: object
+            required:
+                [
+                    source,
+                    type,
+                    check_in,
+                    check_out,
+                    status,
+                    room_bill_to,
+                    extras_bill_to,
+                    rooms,
+                ]
+            properties:
+                booking_ref_id:
+                    {
+                        type: string,
+                        maxLength: 255,
+                        description: 'Generated when left out.',
+                    }
+                source:
+                    {
+                        type: string,
+                        description: 'direct, corporate, ota, travel_agent, meta, …',
+                    }
+                agent_id:
+                    {
+                        type: integer,
+                        description: 'Required when source is travel_agent.',
+                    }
+                booking_channel_id:
+                    {
+                        type: integer,
+                        description: 'Required when source is ota (from `/booking-channels`).',
+                    }
+                metasearch_platform_id:
+                    {
+                        type: integer,
+                        description: 'Required when source is meta.',
+                    }
+                type:
+                    {
+                        type: string,
+                        description: 'A booking type from `/bookings/options`.',
+                    }
+                booking_type: { type: string }
+                check_in: { type: string, format: date }
+                check_out: { type: string, format: date }
+                check_in_time: { type: string, maxLength: 20 }
+                check_out_time: { type: string, maxLength: 20 }
+                status: { type: string, enum: [confirmed, on_hold, enquiry] }
+                hold_release_at:
+                    {
+                        type: string,
+                        format: date-time,
+                        description: 'Required for on_hold and enquiry.',
+                    }
+                hold_auto_release: { type: boolean }
+                hold_reminders:
+                    type: array
+                    maxItems: 10
+                    items:
+                        type: object
+                        required: [channel, days, relative_to]
+                        properties:
+                            channel: { type: string }
+                            days: { type: integer, minimum: 0, maximum: 365 }
+                            relative_to:
+                                {
+                                    type: string,
+                                    enum: [hold_release_date, check_in_date],
+                                }
+                same_plan_for_all_rooms: { type: boolean }
+                pay_at_hotel: { type: boolean }
+                rate_plan: { type: string }
+                discount: { type: number, minimum: 0 }
+                room_bill_to: { type: string, enum: [to_guest, to_company] }
+                extras_bill_to: { type: string, enum: [to_guest, to_company] }
+                bill_room_to_guest_company: { type: boolean }
+                bill_extras_to_guest_company: { type: boolean }
+                no_post: { type: boolean }
+                inclusions: { type: array, items: { type: string } }
+                special_instructions: { type: string }
+                internal_notes: { type: string }
+                copy_to:
+                    type: array
+                    items:
+                        type: object
+                        required: [name]
+                        properties:
+                            name: { type: string }
+                            phone_country_code: { type: string }
+                            phone: { type: string }
+                            email: { type: string, format: email }
+                guest_ids:
+                    {
+                        type: array,
+                        items: { type: integer },
+                        description: 'The first is the primary guest.',
+                    }
+                rooms:
+                    type: array
+                    minItems: 1
+                    items:
+                        type: object
+                        required: [room_category_id, adults]
+                        properties:
+                            room_category_id: { type: integer }
+                            room_id:
+                                {
+                                    type: [integer, 'null'],
+                                    description: 'Null leaves the room unassigned.',
+                                }
+                            meal_plan: { type: string }
+                            package_id: { type: integer }
+                            adults: { type: integer, minimum: 1 }
+                            children: { type: integer, minimum: 0 }
+                            infants: { type: integer, minimum: 0 }
+                            rate_per_night: { type: number, minimum: 0 }
+                addons:
+                    type: array
+                    maxItems: 50
+                    items:
+                        type: object
+                        required: [addon_id, quantity]
+                        properties:
+                            addon_id: { type: integer }
+                            quantity:
+                                { type: integer, minimum: 1, maximum: 999 }
+                override_restrictions:
+                    {
+                        type: boolean,
+                        description: 'Book although stay restrictions rule the stay out (needs the permission).',
+                    }
+
+        Guest:
+            type: object
+            properties:
+                id: { type: integer }
+                property_id: { type: integer }
+                tracker_number: { type: [string, 'null'] }
+                title: { type: [string, 'null'] }
+                first_name: { type: string }
+                last_name: { type: [string, 'null'] }
+                phone_country_code: { type: [string, 'null'] }
+                phone: { type: [string, 'null'] }
+                emails: { type: array, items: { type: string } }
+                gender: { type: [string, 'null'] }
+                dob: { type: [string, 'null'], format: date }
+                nationality: { type: [string, 'null'] }
+                purpose_of_visit: { type: [string, 'null'] }
+                guest_preferences: { type: [string, 'null'] }
+                anniversary: { type: [string, 'null'], format: date }
+                company: { type: [object, 'null'] }
+                address: { type: [object, 'null'] }
+                vehicle_number: { type: [string, 'null'] }
+                created_at: { type: string, format: date-time }
+                updated_at: { type: string, format: date-time }
+
+        GuestForm:
+            type: object
+            required: [first_name]
+            description: Last name and phone may also be required (Application Settings → Guest).
+            properties:
+                title: { type: string, maxLength: 20 }
+                first_name: { type: string, maxLength: 255 }
+                last_name: { type: string, maxLength: 255 }
+                phone_country_code: { type: string, maxLength: 10 }
+                phone: { type: string, maxLength: 20 }
+                emails: { type: array, items: { type: string, format: email } }
+                gender: { type: string, maxLength: 20 }
+                dob: { type: string, format: date }
+                nationality: { type: string, maxLength: 100 }
+                purpose_of_visit: { type: string, enum: [Leisure, Business] }
+                guest_preferences: { type: string }
+                subscribe_newsletter: { type: boolean }
+                anniversary: { type: string, format: date }
+                frequent_flyer: { type: string, maxLength: 255 }
+                vehicle_number: { type: string, maxLength: 50 }
+                place_of_birth: { type: string, maxLength: 255 }
+                present_business_address: { type: string, maxLength: 255 }
+                address:
+                    type: object
+                    properties:
+                        address: { type: string }
+                        country_id: { type: integer }
+                        state_id: { type: integer }
+                        city_id: { type: integer }
+                        postal_code: { type: string }
+                company:
+                    type: object
+                    properties:
+                        gstin: { type: string }
+                        name: { type: string }
+                        email: { type: string, format: email }
+                        integration_id: { type: string }
+                        address: { type: string }
+                city_ledger_account_id:
+                    {
+                        type: integer,
+                        description: "The company's City Ledger account.",
+                    }
+                create_city_ledger_account: { type: boolean }
+                international_details:
+                    type: object
+                    properties:
+                        passport_number: { type: string }
+                        passport_issue_date: { type: string, format: date }
+                        passport_issue_place: { type: string }
+
+        PaymentMode:
+            type: string
+            enum:
+                [
+                    Online,
+                    Cash,
+                    Credit Card,
+                    Debit Card,
+                    E-Collect,
+                    Net Banking,
+                    NEFT,
+                    RTGS,
+                    IMPS,
+                    UPI,
+                    Cheque/DD,
+                    Payment Wallet,
+                    USSD,
+                    Others,
+                    Debit Note,
+                    Credit Note,
+                    Bills Payment,
+                    Gift Card,
+                    Commission,
+                    TDS,
+                    Air Pay,
+                    Bank Transfer,
+                    AUB Paymate,
+                    QR Code,
+                    Bank Deposit,
+                ]
+
+        PaymentStatus:
+            type: string
+            enum: [Received, Pending, Cancelled, Refunded, Failed]
+
+        Payment:
+            type: object
+            properties:
+                id: { type: integer }
+                property_id: { type: integer }
+                booking_id: { type: [integer, 'null'] }
+                type: { type: string, enum: [receipt, refund] }
+                receipt_number: { type: string }
+                voucher_number: { type: [string, 'null'] }
+                status: { $ref: '#/components/schemas/PaymentStatus' }
+                payment_mode: { $ref: '#/components/schemas/PaymentMode' }
+                total_txn_amount: { type: number }
+                tagged_amount: { type: number }
+                untagged_amount: { type: number }
+                guest_name: { type: [string, 'null'] }
+                payee_name: { type: [string, 'null'] }
+                payment_ref_id: { type: [string, 'null'] }
+                pg_txn_id: { type: [string, 'null'] }
+                collection_source: { type: [string, 'null'] }
+                collected_by_staff: { type: [string, 'null'] }
+                notes: { type: [string, 'null'] }
+                cancellation_reason: { type: [string, 'null'] }
+                payment_transaction_date:
+                    { type: [string, 'null'], format: date-time }
+                created_at: { type: string, format: date-time }
+                allocations:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            booking_id: { type: integer }
+                            booking_ref_id: { type: string }
+                            tagged_amount: { type: number }
+
+        BillItems:
+            type: object
+            properties:
+                items:
+                    type: array
+                    maxItems: 200
+                    items:
+                        type: object
+                        required: [outlet_item_id, quantity]
+                        properties:
+                            outlet_item_id: { type: integer }
+                            quantity:
+                                { type: integer, minimum: 1, maximum: 9999 }
+                            unit_price:
+                                {
+                                    type: number,
+                                    minimum: 0,
+                                    description: 'Overrides the price (needs the permission).',
+                                }
+                discount: { type: number, minimum: 0 }
+
+        OutletBill:
+            type: object
+            properties:
+                id: { type: integer }
+                property_id: { type: integer }
+                outlet_id: { type: integer }
+                outlet: { type: string }
+                bill_number: { type: string }
+                business_date: { type: string, format: date }
+                status: { type: string, enum: [open, posted, settled, void] }
+                status_label: { type: string }
+                guest_name: { type: [string, 'null'] }
+                table_number: { type: [string, 'null'] }
+                outlet_table_id: { type: [integer, 'null'] }
+                split_from_id: { type: [integer, 'null'] }
+                booking_id: { type: [integer, 'null'] }
+                booking_ref_id: { type: [string, 'null'] }
+                sub_booking_id: { type: [integer, 'null'] }
+                sub_folio_id: { type: [integer, 'null'] }
+                payment_id: { type: [integer, 'null'] }
+                receipt_number: { type: [string, 'null'] }
+                sub_total: { type: number }
+                discount: { type: number }
+                tax_total: { type: number }
+                total: { type: number }
+                notes: { type: [string, 'null'] }
+                items:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            id: { type: integer }
+                            outlet_item_id: { type: integer }
+                            name: { type: string }
+                            sac_hsn_code: { type: [string, 'null'] }
+                            quantity: { type: integer }
+                            unit_price: { type: number }
+                            amount: { type: number }
+                            tax_rate: { type: number }
+                            tax_amount: { type: number }
+                kots:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            id: { type: integer }
+                            kot_number: { type: string }
+                            notes: { type: [string, 'null'] }
+                            is_cancellation: { type: boolean }
+                            items:
+                                type: array
+                                items:
+                                    type: object
+                                    properties:
+                                        outlet_item_id: { type: integer }
+                                        name: { type: string }
+                                        quantity: { type: integer }
+                            created_at: { type: string, format: date-time }
+                            printed_at:
+                                { type: [string, 'null'], format: date-time }
+                created_at: { type: string, format: date-time }
+                closed_at: { type: [string, 'null'], format: date-time }
+                voided_at: { type: [string, 'null'], format: date-time }
+                void_reason: { type: [string, 'null'] }

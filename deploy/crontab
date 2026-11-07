@@ -1,0 +1,6 @@
+# The Laravel scheduler, every minute, as the web server user:
+#   sudo crontab -u www-data deploy/crontab
+# It runs the night audit, holds release, report e-mails, channel-manager sync, revenue
+# recognition, ops:monitor (health alerts) and the nightly ops:backup (see routes/console.php).
+
+* * * * * cd /var/www/hotel-booking/current && php artisan schedule:run >> /dev/null 2>&1
